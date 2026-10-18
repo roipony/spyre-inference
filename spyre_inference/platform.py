@@ -111,6 +111,27 @@ def _raise_dynamo_recompile_limits() -> None:
 _raise_dynamo_recompile_limits()
 
 
+def _maybe_uniproc(parallel_config, requested_backend) -> None:
+    """Run a single worker inside EngineCore when SPYRE_UNIPROC_EXECUTOR=1.
+
+    CpuPlatform rewrites the "uni" backend to "mp" so OMP can be set up in a fresh
+    worker process. Spyre already pins the threading env vars in configure_threading()
+    before that rewrite, so at world_size 1 the extra Worker process only costs startup
+    time. ``requested_backend`` is the value before CpuPlatform ran: an explicit "mp"
+    (or any other backend) is left alone.
+    """
+    from spyre_inference import envs
+
+    if not envs.SPYRE_UNIPROC_EXECUTOR:
+        return
+    if parallel_config.world_size != 1 or requested_backend not in (None, "uni"):
+        return
+    if parallel_config.distributed_executor_backend != "mp":
+        return
+    logger.info("SPYRE_UNIPROC_EXECUTOR=1: using the uni executor at world_size 1.")
+    parallel_config.distributed_executor_backend = "uni"
+
+
 class TorchSpyrePlatform(CpuPlatform):
     _enum = PlatformEnum.OOT
 
@@ -813,8 +834,12 @@ class TorchSpyrePlatform(CpuPlatform):
         if vllm_config.cache_config.kv_cache_memory_bytes is None:
             os.environ.setdefault("VLLM_CPU_KVCACHE_SPACE", "4")
 
+        # CpuPlatform turns "uni" into "mp"; remember what was asked for (see _maybe_uniproc).
+        requested_backend = parallel_config.distributed_executor_backend
+
         # call CpuPlatform.check_and_update_config()
         super().check_and_update_config(vllm_config)
+        _maybe_uniproc(parallel_config, requested_backend)
 
         # Must run after super(), which sets a block_size default of its own, and before
         # the num_gpu_blocks_override math below, which reads block_size.
