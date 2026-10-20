@@ -26,7 +26,7 @@ from vllm.v1.worker.worker_base import CompilationTimes
 from spyre_inference import envs, keep_sigterm_handler
 from spyre_inference.custom_ops import register_all
 from spyre_inference.models import register_models
-from spyre_inference.platform import _raise_dynamo_recompile_limits
+from spyre_inference.platform import _raise_dynamo_recompile_limits, maybe_set_inproc_threads
 from spyre_inference.v1.worker import compile_guard
 from spyre_inference.v1.worker.spyre_model_runner import TorchSpyreModelRunner
 
@@ -86,6 +86,12 @@ class TorchSpyreWorker(Worker):
         return nullcontext()
 
     def init_device(self) -> None:
+        # SPYRE_INPROC_ENGINE: torch was imported in this process before
+        # configure_threading() set OMP_NUM_THREADS and vLLM set its Inductor env
+        # vars, so apply them here when the engine runs in-process (a spawned worker
+        # reads them at its own torch import).
+        maybe_set_inproc_threads()
+
         # The env vars spyreccl reads. `setdefault` leaves torchrun-supplied
         # values intact.
         # DP>1 is rejected in TorchSpyrePlatform.check_and_update_config,
