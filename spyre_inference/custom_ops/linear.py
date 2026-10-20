@@ -36,12 +36,31 @@ from vllm.model_executor.layers.linear import (
     UnquantizedLinearMethod,
 )
 
+from spyre_inference import envs
+
 logger = init_logger(__name__)
 
 # torch-spyre#4032: on some weight shapes a short row block runs well below the rate a
 # full 8 PT rows sustain. It costs a few percent elsewhere, so re-measure before widening.
 _PAD_ROWS = 8
 _MAX_PAD_WEIGHT = 200_000_000
+_TRANSPOSE_BLOCK_ROWS = 128
+
+
+def _transpose_contiguous(w: torch.Tensor) -> torch.Tensor:
+    """`w.t().contiguous()`; with SPYRE_BLOCKED_TRANSPOSE a 2-D CPU `w` is copied in
+    row blocks, which keeps the strided writes cache-resident. Bit-identical result."""
+    if not (
+        envs.SPYRE_BLOCKED_TRANSPOSE
+        and w.dim() == 2
+        and w.device.type == "cpu"
+        and not w.t().is_contiguous()
+    ):
+        return w.t().contiguous()
+    out = torch.empty((w.shape[1], w.shape[0]), dtype=w.dtype, device=w.device)
+    for i in range(0, w.shape[0], _TRANSPOSE_BLOCK_ROWS):
+        out[:, i : i + _TRANSPOSE_BLOCK_ROWS].copy_(w[i : i + _TRANSPOSE_BLOCK_ROWS].t())
+    return out
 
 
 def spyre_linear_t(
@@ -108,9 +127,9 @@ class SpyreTransposedWeightMethod:
             w = padded
 
         # Store transposed (`[in, out]`, contiguous) so the forward GEMM is the
-        # Spyre-fast `x @ A`. `.t().contiguous()` gives INDEPENDENT storage, so a
+        # Spyre-fast `x @ A`. The transpose gives INDEPENDENT storage, so a
         # distinct WEIGHT_T_ATTR leaves the source `weight` untouched.
-        setattr(layer, self.WEIGHT_T_ATTR, Parameter(w.t().contiguous(), requires_grad=False))
+        setattr(layer, self.WEIGHT_T_ATTR, Parameter(_transpose_contiguous(w), requires_grad=False))
 
     def _pad_short_rows(self, layer: torch.nn.Module) -> bool:
         return False

@@ -77,7 +77,9 @@ in two overrides:
 
 - `process_weights_after_loading` replaces the loaded `[out, in]` weight with a contiguous
   `[in, out]` `Wᵀ` (optionally padding the output rows first), so the transpose is paid once at
-  load time rather than every forward.
+  load time rather than every forward. A plain `w.t().contiguous()` walks the source with a
+  large stride and is slow on big weights; `SPYRE_BLOCKED_TRANSPOSE=1` builds the same `Wᵀ` in
+  blocks of 128 source rows instead (bit-identical, off by default).
 - `apply` runs `spyre_linear_t` — `torch.matmul(x, Wᵀ)` plus optional bias — instead of
   `F.linear`, dropping any trailing pad columns with an on-device un-pad slice.
 
