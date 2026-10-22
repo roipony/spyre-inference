@@ -48,8 +48,9 @@ _TRANSPOSE_BLOCK_ROWS = 128
 
 
 def _transpose_contiguous(w: torch.Tensor) -> torch.Tensor:
-    """`w.t().contiguous()`; with SPYRE_BLOCKED_TRANSPOSE a 2-D CPU `w` is copied in
-    row blocks, which keeps the strided writes cache-resident. Bit-identical result."""
+    """`w.t().contiguous()`, bit-identical. PyTorch copies a 2-D transpose on one thread;
+    with SPYRE_BLOCKED_TRANSPOSE a 2-D CPU `w` is copied 128 source rows at a time, which
+    runs on torch's CPU threads and keeps each block's reads and writes in cache."""
     if not (
         envs.SPYRE_BLOCKED_TRANSPOSE
         and w.dim() == 2
@@ -127,8 +128,9 @@ class SpyreTransposedWeightMethod:
             w = padded
 
         # Store transposed (`[in, out]`, contiguous) so the forward GEMM is the
-        # Spyre-fast `x @ A`. The transpose gives INDEPENDENT storage, so a
-        # distinct WEIGHT_T_ATTR leaves the source `weight` untouched.
+        # Spyre-fast `x @ A`. The transpose is a copy unless `w.t()` is already
+        # contiguous (a single row, or a transposed view). Loaded weights never are,
+        # so a distinct WEIGHT_T_ATTR leaves the source `weight` untouched.
         setattr(layer, self.WEIGHT_T_ATTR, Parameter(_transpose_contiguous(w), requires_grad=False))
 
     def _pad_short_rows(self, layer: torch.nn.Module) -> bool:

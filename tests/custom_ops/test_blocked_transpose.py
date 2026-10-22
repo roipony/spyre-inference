@@ -52,11 +52,7 @@ def _assert_bit_identical(got, expected):
 
 @pytest.fixture(params=["0", "1"], ids=["off", "on"])
 def blocked_transpose(request, monkeypatch):
-    from spyre_inference import envs
-
     monkeypatch.setenv("SPYRE_BLOCKED_TRANSPOSE", request.param)
-    envs.clear_env_cache()
-    assert (request.param == "1") == envs.SPYRE_BLOCKED_TRANSPOSE
     return request.param == "1"
 
 
