@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SPYRE_UNIPROC_EXECUTOR: undo CpuPlatform's "uni" -> "mp" rewrite at world_size 1."""
+"""At world_size 1, undo CpuPlatform's "uni" -> "mp" rewrite unless "mp" was asked for."""
 
 from types import SimpleNamespace
 
@@ -27,42 +27,27 @@ def _parallel_config(world_size: int, backend):
 
 
 @pytest.mark.parametrize("requested", [None, "uni"])
-def test_switch_on_restores_uni_at_world_size_1(monkeypatch, requested):
-    monkeypatch.setenv("SPYRE_UNIPROC_EXECUTOR", "1")
+def test_restores_uni_at_world_size_1(requested):
     pc = _parallel_config(1, "mp")
     _maybe_uniproc(pc, requested)
     assert pc.distributed_executor_backend == "uni"
 
 
-@pytest.mark.parametrize("value", [None, "0", "", "true"])
-def test_switch_off_keeps_mp(monkeypatch, value):
-    if value is None:
-        monkeypatch.delenv("SPYRE_UNIPROC_EXECUTOR", raising=False)
-    else:
-        monkeypatch.setenv("SPYRE_UNIPROC_EXECUTOR", value)
-    pc = _parallel_config(1, "mp")
-    _maybe_uniproc(pc, "uni")
-    assert pc.distributed_executor_backend == "mp"
-
-
-def test_explicit_mp_is_kept(monkeypatch):
-    monkeypatch.setenv("SPYRE_UNIPROC_EXECUTOR", "1")
+def test_explicit_mp_is_kept():
     pc = _parallel_config(1, "mp")
     _maybe_uniproc(pc, "mp")
     assert pc.distributed_executor_backend == "mp"
 
 
-def test_tensor_parallel_keeps_mp(monkeypatch):
-    monkeypatch.setenv("SPYRE_UNIPROC_EXECUTOR", "1")
+def test_tensor_parallel_keeps_mp():
     pc = _parallel_config(4, "mp")
     _maybe_uniproc(pc, None)
     assert pc.distributed_executor_backend == "mp"
 
 
 @pytest.mark.parametrize("backend", ["uni", "external_launcher"])
-def test_backend_not_rewritten_to_mp_is_left_alone(monkeypatch, backend):
+def test_backend_not_rewritten_to_mp_is_left_alone(backend):
     # e.g. VLLM_ENABLE_V1_MULTIPROCESSING=0, where CpuPlatform keeps "uni".
-    monkeypatch.setenv("SPYRE_UNIPROC_EXECUTOR", "1")
     pc = _parallel_config(1, backend)
     _maybe_uniproc(pc, backend)
     assert pc.distributed_executor_backend == backend

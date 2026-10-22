@@ -112,23 +112,23 @@ _raise_dynamo_recompile_limits()
 
 
 def _maybe_uniproc(parallel_config, requested_backend) -> None:
-    """Run a single worker inside EngineCore when SPYRE_UNIPROC_EXECUTOR=1.
+    """Keep the single worker inside EngineCore (the uni executor) at world_size 1.
 
     CpuPlatform rewrites the "uni" backend to "mp" so OMP can be set up in a fresh
     worker process. Spyre already pins the threading env vars in configure_threading()
     before that rewrite, so at world_size 1 the extra Worker process only costs startup
-    time. ``requested_backend`` is the value before CpuPlatform ran: an explicit "mp"
-    (or any other backend) is left alone.
+    time. ``requested_backend`` is the value before CpuPlatform ran. vLLM picks "uni" at
+    world_size 1 when no backend is given, so an explicit
+    ``--distributed-executor-backend mp`` (or any other backend) is left alone.
     """
-    from spyre_inference import envs
-
-    if not envs.SPYRE_UNIPROC_EXECUTOR:
-        return
     if parallel_config.world_size != 1 or requested_backend not in (None, "uni"):
         return
     if parallel_config.distributed_executor_backend != "mp":
         return
-    logger.info("SPYRE_UNIPROC_EXECUTOR=1: using the uni executor at world_size 1.")
+    logger.info(
+        "Using the uni executor at world_size 1; pass --distributed-executor-backend mp "
+        "to run the worker in its own process."
+    )
     parallel_config.distributed_executor_backend = "uni"
 
 

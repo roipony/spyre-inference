@@ -47,7 +47,6 @@ if TYPE_CHECKING:
     SPYRE_MOE_CHUNKS: int | None = None
     SPYRE_NUM_CPUS: int = 0
     SPYRE_UPDATE_THREAD_CONFIG: bool = True
-    SPYRE_UNIPROC_EXECUTOR: bool = False
 
 _cache: dict[str, Any] = {}
 
@@ -143,11 +142,6 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # friends) to the detected budget to avoid thread oversubscription in
     # CPU-limited containers. Set to "0" to leave them untouched and only warn.
     "SPYRE_UPDATE_THREAD_CONFIG": lambda: bool(int(os.getenv("SPYRE_UPDATE_THREAD_CONFIG", "1"))),
-    # When "1", run the single worker inside EngineCore (uni executor) at
-    # world_size 1 instead of the separate Worker process CpuPlatform forces,
-    # saving its spawn and re-import at startup. Off by default; an explicitly
-    # requested --distributed-executor-backend is never overridden.
-    "SPYRE_UNIPROC_EXECUTOR": lambda: os.getenv("SPYRE_UNIPROC_EXECUTOR", "0") == "1",
 }
 # --8<-- [end:env-vars-definition]
 
