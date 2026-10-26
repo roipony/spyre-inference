@@ -132,121 +132,6 @@ def _maybe_uniproc(parallel_config, requested_backend) -> None:
     parallel_config.distributed_executor_backend = "uni"
 
 
-_MP_ENV = "VLLM_ENABLE_V1_MULTIPROCESSING"
-# pid of the process in which _maybe_inproc_engine set _MP_ENV itself (as opposed to
-# the user, or a parent process the value was inherited from); None if it never did.
-_inproc_env_pid: int | None = None
-
-
-def _inproc_env_set_here() -> bool:
-    return _inproc_env_pid == os.getpid()
-
-
-def _maybe_inproc_engine(parallel_config) -> bool:
-    """Set VLLM_ENABLE_V1_MULTIPROCESSING=0 at world_size 1 when SPYRE_INPROC_ENGINE=1.
-
-    vLLM reads the variable lazily, uncached until the first EngineCore starts:
-    CpuPlatform.check_and_update_config (our super()) then keeps the "uni" executor, and
-    LLMEngine.from_engine_args, which reads it only after this config is built, uses the
-    in-process client, so the offline LLM spawns no EngineCore process. The world size
-    is not known at plugin register() time, hence this hook. This hook cannot tell LLM
-    from AsyncLLM: AsyncLLM ignores the variable and always spawns EngineCore, where
-    only the "uni" executor remains. Whether the worker really runs in this process is
-    decided in the worker (maybe_set_inproc_threads).
-
-    A value the user set (or inherited from a parent process) is left alone. Once our
-    value is set, a later engine in this process that is not eligible (world_size > 1,
-    a non-uni backend) raises: the first EngineCore fixed vLLM's env cache
-    (enable_envs_cache) with multiprocessing off, and its worker left RANK/WORLD_SIZE/
-    LOCAL_RANK/LOCAL_WORLD_SIZE in os.environ, so neither can be undone here.
-    Returns True when the variable is (still) set by this switch.
-    """
-    global _inproc_env_pid
-    from spyre_inference import envs
-
-    if not envs.SPYRE_INPROC_ENGINE:
-        return False
-    eligible = parallel_config.world_size == 1 and (
-        parallel_config.distributed_executor_backend in (None, "uni")
-    )
-    if _inproc_env_set_here():
-        if eligible:
-            return True
-        raise ValueError(
-            "SPYRE_INPROC_ENGINE=1 already set VLLM_ENABLE_V1_MULTIPROCESSING=0 for an "
-            "earlier engine in this process, so this one (world_size="
-            f"{parallel_config.world_size}, distributed_executor_backend="
-            f"{parallel_config.distributed_executor_backend!r}) cannot get multiprocessing "
-            "back: vLLM caches its env vars once an engine starts, and the in-process "
-            "worker left RANK/WORLD_SIZE in the environment. Build it in a new process."
-        )
-    if not eligible or _MP_ENV in os.environ:
-        return False
-    os.environ[_MP_ENV] = "0"
-    _inproc_env_pid = os.getpid()
-    logger.info(
-        "SPYRE_INPROC_ENGINE=1: set %s=0 (an offline LLM engine runs in this process; "
-        "AsyncLLM still spawns EngineCore).",
-        _MP_ENV,
-    )
-    return True
-
-
-def _set_inproc_torch_threads() -> None:
-    """Give the in-process worker the intra-op thread count a spawned one would get.
-
-    configure_threading() only sets OMP_NUM_THREADS; a spawned worker picks it up when
-    it imports torch, but here torch (and libgomp, which reads OMP_NUM_THREADS once when
-    loaded) is already imported, so apply it explicitly.
-    """
-    try:
-        n = int(os.environ.get("OMP_NUM_THREADS", ""))
-    except ValueError:
-        return
-    if n <= 0:
-        return
-    old = torch.get_num_threads()
-    if old != n:
-        torch.set_num_threads(n)
-    logger.info(
-        "SPYRE_INPROC_ENGINE=1: engine running in-process; torch intra-op threads %d -> %d "
-        "(OMP_NUM_THREADS).",
-        old,
-        n,
-    )
-
-
-def _set_inproc_inductor_config() -> None:
-    """Apply the Inductor options a spawned EngineCore would read at its torch import.
-
-    CpuPlatform.check_and_update_config sets TORCHINDUCTOR_CPP_DYNAMIC_THREADS=1 and
-    TORCHINDUCTOR_COMPILE_THREADS=1 for the processes it spawns. torch reads both only
-    when it is imported, so in-process they would have no effect. cpp.dynamic_threads is
-    part of the FX graph cache key: without this, every graph compiled in-process would
-    miss the cache entries a spawned engine wrote, and the other way round.
-    """
-    import torch._inductor.config as inductor_config
-
-    if os.environ.get("TORCHINDUCTOR_CPP_DYNAMIC_THREADS") == "1":
-        inductor_config.cpp.dynamic_threads = True
-    compile_threads = os.environ.get("TORCHINDUCTOR_COMPILE_THREADS", "")
-    if compile_threads.isdigit() and int(compile_threads) > 0:
-        inductor_config.compile_threads = int(compile_threads)
-
-
-def maybe_set_inproc_threads() -> None:
-    """Called by the worker: if it runs in the process that set
-    VLLM_ENABLE_V1_MULTIPROCESSING=0, i.e. the engine really runs in-process, apply
-    OMP_NUM_THREADS and the Inductor options a spawned engine reads at torch import.
-
-    A worker in a spawned (API server) EngineCore read them at its own torch import and
-    has a different pid, so it is left alone.
-    """
-    if _inproc_env_set_here():
-        _set_inproc_torch_threads()
-        _set_inproc_inductor_config()
-
-
 class TorchSpyrePlatform(CpuPlatform):
     _enum = PlatformEnum.OOT
 
@@ -857,13 +742,6 @@ class TorchSpyrePlatform(CpuPlatform):
                 f"{parallel_config.tensor_parallel_size}): torch-spyre's all_reduce is "
                 f"float16-only. Run it at tensor_parallel_size=1 or in float16."
             )
-
-        # SPYRE_INPROC_ENGINE: must run before super(), which reads
-        # VLLM_ENABLE_V1_MULTIPROCESSING. A bare VllmConfig() (no model) builds no engine.
-        # The torch thread count is applied by the worker (maybe_set_inproc_threads),
-        # the only place that knows whether it really runs in this process.
-        if vllm_config.model_config is not None:
-            _maybe_inproc_engine(parallel_config)
 
         # Clamp CPU threading env vars before workers fork so they inherit the
         # corrected values. DP is rejected above, so world_size is the worker count.

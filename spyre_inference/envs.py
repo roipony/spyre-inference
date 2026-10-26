@@ -48,7 +48,6 @@ if TYPE_CHECKING:
     SPYRE_MOE_CHUNKS: int | None = None
     SPYRE_NUM_CPUS: int = 0
     SPYRE_UPDATE_THREAD_CONFIG: bool = True
-    SPYRE_INPROC_ENGINE: bool = False
 
 _cache: dict[str, Any] = {}
 
@@ -150,26 +149,6 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # friends) to the detected budget to avoid thread oversubscription in
     # CPU-limited containers. Set to "0" to leave them untouched and only warn.
     "SPYRE_UPDATE_THREAD_CONFIG": lambda: bool(int(os.getenv("SPYRE_UPDATE_THREAD_CONFIG", "1"))),
-    # When "1", run the offline `LLM(...)` engine in the calling process at
-    # world_size 1 (sets VLLM_ENABLE_V1_MULTIPROCESSING=0) instead of spawning an
-    # EngineCore process, saving its spawn and re-import at startup. Off by default.
-    # An explicit VLLM_ENABLE_V1_MULTIPROCESSING or a non-uni executor is never
-    # overridden. The config hook that sets it cannot tell LLM from the API server:
-    # AsyncLLM ignores the variable and keeps its EngineCore process, so there it
-    # changes nothing (the worker already runs inside EngineCore at world_size 1).
-    # The worker applies OMP_NUM_THREADS with torch.set_num_threads(), and the Inductor
-    # options vLLM sets for a spawned engine (TORCHINDUCTOR_CPP_DYNAMIC_THREADS and
-    # TORCHINDUCTOR_COMPILE_THREADS), only when it really runs in the calling process,
-    # where torch was imported before they were set. So the compile caches are shared
-    # with a spawned engine.
-    # In-process, upstream vLLM's engine start acts on the caller's process: it
-    # gc.freeze()s the caller's heap, caches vLLM's env vars for the rest of the
-    # process, seeds the caller's global RNGs with the engine seed, and leaves
-    # RANK/WORLD_SIZE/LOCAL_RANK/LOCAL_WORLD_SIZE set. Nothing on this path releases
-    # the Spyre device before the process exits (LLM has no shutdown hook). A later
-    # engine in the same process with world_size > 1 or a non-uni executor raises;
-    # build it in a new process.
-    "SPYRE_INPROC_ENGINE": lambda: os.getenv("SPYRE_INPROC_ENGINE", "0") == "1",
 }
 # --8<-- [end:env-vars-definition]
 
